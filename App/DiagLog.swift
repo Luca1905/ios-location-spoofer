@@ -52,6 +52,13 @@ final class DiagLog: ObservableObject {
         if entries.count > maxEntries {
             entries.removeFirst(entries.count - maxEntries)
         }
+        #if DEBUG
+        if let directory = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first {
+            try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let text = entries.map { $0.formatted }.joined(separator: "\n")
+            try? text.write(to: directory.appendingPathComponent("diagnostics.log"), atomically: true, encoding: .utf8)
+        }
+        #endif
     }
 
     /// 清空所有日志(主线程派发)。

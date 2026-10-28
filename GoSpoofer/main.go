@@ -23,8 +23,8 @@ import (
 
 	"github.com/elazarl/goproxy"
 	pb "golocationspoofer/pb"
-	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/encoding/protowire"
+	"google.golang.org/protobuf/proto"
 )
 
 //#cgo CFLAGS: -DGOOS_ios -DNDEBUG
@@ -64,6 +64,14 @@ func golocationspoofer_drainlogs() *C.char {
 	logBuffer = logBuffer[:0]
 	logBufferMu.Unlock()
 	return C.CString(combined)
+}
+
+// Keep transport and TLS failures available through the tunnel diagnostics IPC.
+type proxyDiagnosticWriter struct{}
+
+func (proxyDiagnosticWriter) Write(p []byte) (int, error) {
+	logEvent(strings.TrimSpace(string(p)))
+	return len(p), nil
 }
 
 func init() {
@@ -130,6 +138,7 @@ func golocationspoofer_startproxy(certData *C.char, keyData *C.char, lat C.doubl
 
 	proxy := goproxy.NewProxyHttpServer()
 	proxy.Verbose = false
+	proxy.Logger = log.New(proxyDiagnosticWriter{}, "", 0)
 
 	if globalCACert != nil {
 		setupMITM(proxy, globalCACert)
@@ -199,7 +208,7 @@ func setupMITM(proxy *goproxy.ProxyHttpServer, cert *tls.Certificate) {
 	var customMitmHandler goproxy.FuncHttpsHandler = func(host string, ctx *goproxy.ProxyCtx) (*goproxy.ConnectAction, string) {
 		hostname := strings.Split(host, ":")[0]
 		if hostname == "gs-loc.apple.com" || hostname == "gs-loc-cn.apple.com" {
-			log.Printf("Intercepting location request: %s", host)
+			logEvent(fmt.Sprintf("Intercepting location CONNECT: %s", host))
 			return customCaMitm, host
 		}
 		return goproxy.OkConnect, host
@@ -261,7 +270,8 @@ a{color:#007AFF;text-decoration:none}
 
 func setupLocationSpoofing(proxy *goproxy.ProxyHttpServer) {
 	proxy.OnRequest().DoFunc(func(req *http.Request, ctx *goproxy.ProxyCtx) (*http.Request, *http.Response) {
-		if req.Host == "gs-loc.apple.com" || req.Host == "gs-loc-cn.apple.com" {
+		host := strings.ToLower(req.URL.Hostname())
+		if host == "gs-loc.apple.com" || host == "gs-loc-cn.apple.com" {
 			if req.URL.Path == "/clls/wloc" && req.Method == "POST" {
 				return handleLocationRequest(req)
 			}
@@ -282,6 +292,8 @@ func handleLocationRequest(req *http.Request) (*http.Request, *http.Response) {
 
 	body, err := io.ReadAll(req.Body)
 	req.Body.Close()
+	// Every unsupported request must remain readable by the upstream transport.
+	req.Body = io.NopCloser(bytes.NewReader(body))
 	if err != nil {
 		log.Printf("Failed to read request body: %v", err)
 		logEvent(fmt.Sprintf("Failed to read request body: %v, passing through", err))
@@ -307,6 +319,10 @@ func handleLocationRequest(req *http.Request) (*http.Request, *http.Response) {
 	wifiCount := len(wloc.WifiDevices)
 	log.Printf("Spoofing location for %d WiFi devices", wifiCount)
 	logEvent(fmt.Sprintf("AppleWLoc parsed wifiCount=%d", wifiCount))
+	if wifiCount == 0 {
+		logEvent("No WiFi access points to spoof; forwarding the original lookup")
+		return req, nil
+	}
 
 	// raw wire 递归 splice:只动 Location.Latitude(tag 1 varint)/Longitude(tag 2 varint)的字节,
 	// 其他所有字段(HorizontalAccuracy/Altitude/未知 tag/NumCellResults/DeviceType 等)wire 字节级保留。
@@ -414,6 +430,7 @@ func SerializeProto(p proto.Message, initial []byte) ([]byte, error) {
 }
 
 func main() {}
+
 // rewriteAppleWLocCoords 在 AppleWLoc 原始 wire bytes 上扫描所有 WifiDevices(tag=2 LEN),
 // 对每个 WifiDevice 递归调用 rewriteWifiDevice 把 lat/lon 改成 spoof 坐标。
 // 其他顶层字段(NumCellResults/CellTowerResponse/DeviceType/未知 tag 等)wire 字节级原样保留。
@@ -484,11 +501,7 @@ func rewriteWifiDevice(wd []byte, lat, lon int64) ([]byte, int) {
 		}
 	}
 	if !locationSeen {
-		var loc []byte
-		loc = protowire.AppendTag(loc, 1, protowire.VarintType)
-		loc = protowire.AppendVarint(loc, uint64(lat))
-		loc = protowire.AppendTag(loc, 2, protowire.VarintType)
-		loc = protowire.AppendVarint(loc, uint64(lon))
+		loc, _ := rewriteLocation(nil, lat, lon)
 		out = protowire.AppendTag(out, 2, protowire.BytesType)
 		out = protowire.AppendBytes(out, loc)
 		modified += 2
@@ -504,11 +517,16 @@ func rewriteLocation(loc []byte, lat, lon int64) ([]byte, int) {
 	modified := 0
 	latSeen := false
 	lonSeen := false
+	accuracySeen := false
 	b := loc
 	for len(b) > 0 {
 		num, typ, tagLen := protowire.ConsumeTag(b)
 		if tagLen < 0 {
 			return loc, modified
+		}
+		if num == 3 && typ == protowire.VarintType {
+			value, n := protowire.ConsumeVarint(b[tagLen:])
+			accuracySeen = n > 0 && int64(value) > 0
 		}
 		if num == 1 && typ == protowire.VarintType {
 			latSeen = true
@@ -549,6 +567,11 @@ func rewriteLocation(loc []byte, lat, lon int64) ([]byte, int) {
 		out = protowire.AppendVarint(out, uint64(lon))
 		modified++
 	}
+	// Requests normally contain BSSIDs without locations. A response also needs
+	// an accuracy estimate; coordinates alone describe a zero-accuracy result.
+	if !accuracySeen {
+		out = protowire.AppendTag(out, 3, protowire.VarintType)
+		out = protowire.AppendVarint(out, 39)
+	}
 	return out, modified
 }
-

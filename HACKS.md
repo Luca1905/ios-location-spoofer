@@ -1,62 +1,20 @@
-# Hacks & Workarounds
+# Build notes
 
-This document tracks non-standard configurations and manual workarounds required for this project.
+## Go archive linking
 
-## Manual pbxproj Edit for Static Library (2026-01-18)
+The tunnel target links Go through `-lgolocationspoofer`, with its library search
+path pointing to `GoSpoofer/build` for physical devices and
+`GoSpoofer/build/iphonesimulator` for simulators. Do not also add the archive to
+Copy Bundle Resources or link the physical-device archive directly in the
+Frameworks phase: that prevents a simulator build from selecting its own archive.
 
-**Problem:** XcodeGen doesn't support adding static libraries (`.a` files) to the "Link Binary With Libraries" build phase. When `libgolocationspoofer.a` was included via the `sources` in `project.yml`, XcodeGen incorrectly added it to the Resources build phase, causing App Store validation to fail with:
+Build the appropriate archive before Xcode:
 
+```sh
+bash GoSpoofer/make.sh              # physical iPhone
+bash GoSpoofer/make.sh --simulator  # Apple Silicon simulator
 ```
-Invalid bundle structure. The "location-spoofer.app/PlugIns/location-spoofer-tunnel.appex/libgolocationspoofer.a" binary file is not permitted.
-Your app cannot contain standalone executables or libraries, other than a valid CFBundleExecutable of supported bundles.
-```
 
-**Solution:**
-
-1. Exclude `libgolocationspoofer.a` from XcodeGen sources in `project.yml`:
-   ```yaml
-   sources:
-     - path: GoSpoofer
-       excludes:
-         - "**/*.go"
-         - "**/*.sh"
-         - "build/**"
-         - "go.mod"
-         - "go.sum"
-         - "CGoLocationSpoofer.modulemap"
-         - "libgolocationspoofer.a"  # Added
-   ```
-
-2. Regenerate project: `xcodegen generate`
-
-3. Manually edit `location-spoofer.xcodeproj/project.pbxproj`:
-
-   **PBXBuildFile section** - Add build file entry:
-   ```pbxproj
-   54E76E1073DFE78B6C6DB93B /* libgolocationspoofer.a in Frameworks */ = {
-     isa = PBXBuildFile;
-     fileRef = 23337A02247D09C30D523817 /* libgolocationspoofer.a */;
-   };
-   ```
-
-   **PBXFileReference section** - Add file reference:
-   ```pbxproj
-   23337A02247D09C30D523817 /* libgolocationspoofer.a */ = {
-     isa = PBXFileReference;
-     lastKnownFileType = archive.ar;
-     path = libgolocationspoofer.a;
-     sourceTree = "<group>";
-   };
-   ```
-
-   **PBXFrameworksBuildPhase section** - Add to files array:
-   ```pbxproj
-   54E76E1073DFE78B6C6DB93B /* libgolocationspoofer.a in Frameworks */,
-   ```
-
-   **PBXGroup section (GoSpoofer)** - Add to children:
-   ```pbxproj
-   23337A02247D09C30D523817 /* libgolocationspoofer.a */,
-   ```
-
-**Re-generation note:** If you run `xcodegen generate` again, you'll need to re-apply this edit. Consider migrating to a framework or using a post-generation script to automate this.
+The physical-device symlink and generated header remain unchanged when building
+for the simulator. `project.yml` includes the conditional library search path,
+so regenerating the project retains the correct archive selection.

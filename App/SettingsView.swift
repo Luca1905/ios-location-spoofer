@@ -2,6 +2,7 @@ import SwiftUI
 import NetworkExtension
 
 struct SettingsView: View {
+    @AppStorage("useMacCompanion") private var useMacCompanion = true
     @Environment(\.dismiss) private var dismiss
     @State private var showResetConfirm = false
     @State private var showCopiedToast = false
@@ -10,6 +11,21 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             List {
+                Section("Location Method") {
+                    Toggle("Use Mac Companion", isOn: $useMacCompanion)
+                    if useMacCompanion {
+                        Text("Choose a location here while the Mac companion is running. Connect by USB, paired Wi-Fi, or Tailscale. No location certificate is required.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                        Text("Away from home: connect Tailscale on both devices and keep this iPhone on Wi-Fi. The Mac must stay online. Configure remote access once using Setup Remote Companion.command on the Mac.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    } else {
+                        Text("Legacy VPN mode may not work on newer iOS versions because Apple's location server uses certificate pinning.")
+                            .font(.footnote)
+                            .foregroundColor(.secondary)
+                    }
+                }
                 // 关于
                 Section("About") {
                     HStack {
@@ -28,6 +44,7 @@ struct SettingsView: View {
 
                 // 诊断信息
                 Section("Diagnostics (use when contacting support)") {
+                    diagnosticRow(label: "Location Method", value: useMacCompanion ? "Mac Companion" : "Legacy VPN")
                     diagnosticRow(label: "VPN Status", value: vpnStatusText)
                     diagnosticRow(label: "Certificate Status", value: certificateStatusText)
                     diagnosticRow(label: "Current Spoofed Location", value: currentLocationText)
@@ -62,7 +79,7 @@ struct SettingsView: View {
                         .foregroundColor(.blue)
                     }
                     if diagLog.entries.isEmpty {
-                        Text("No logs yet. Run "Set as Location" once and come back.")
+                        Text("No logs yet. Run \"Set as Location\" once and come back.")
                             .font(.caption)
                             .foregroundColor(.secondary)
                     } else {
@@ -224,6 +241,7 @@ struct SettingsView: View {
     // MARK: - 重置 App
 
     private func resetApp() {
+        if useMacCompanion { MacCompanion.shared.clearLocation() }
         // 断开 VPN
         ContentView.vpnManager?.connection.stopVPNTunnel()
         // 清坐标

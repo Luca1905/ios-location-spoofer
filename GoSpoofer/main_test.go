@@ -40,7 +40,7 @@ func TestDeserializeRealRequest(t *testing.T) {
 }
 
 func TestFullRoundTrip(t *testing.T) {
-	requestBytes, _ := hex.DecodeString("0001000a656e2d3030315f3030310013636f6d2e6170706c652e6c6f636174696f6e64000a32362e322e3233433535000000020000000002000000")
+	requestBytes := wifiLookupRequest(t)
 
 	arpc := ArpcDeserialize(requestBytes)
 	if arpc == nil {
@@ -98,12 +98,12 @@ func TestFullRoundTrip(t *testing.T) {
 		t.Errorf("First 2 bytes should be 0x0001, got: %x", responseBytes[:2])
 	}
 
-	payloadLen := int(responseBytes[7])<<8 | int(responseBytes[8])
+	payloadLen := int(responseBytes[8])<<8 | int(responseBytes[9])
 	t.Logf("Embedded payload length: %d bytes", payloadLen)
 	t.Logf("Total response length: %d bytes", len(responseBytes))
 
-	if payloadLen != len(responseBytes)-9 {
-		t.Errorf("Payload length mismatch: embedded=%d, actual=%d", payloadLen, len(responseBytes)-9)
+	if payloadLen != len(responseBytes)-10 {
+		t.Errorf("Payload length mismatch: embedded=%d, actual=%d", payloadLen, len(responseBytes)-10)
 	}
 }
 

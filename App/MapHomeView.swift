@@ -48,13 +48,14 @@ private final class LocationFetcher: NSObject, ObservableObject, CLLocationManag
 
     func locationManager(_ manager: CLLocationManager, didUpdateLocations locations: [CLLocation]) {
         guard let loc = locations.last else { return }
+        DiagLog.add("[location] iOS reported (\(loc.coordinate.latitude), \(loc.coordinate.longitude)) accuracy=\(loc.horizontalAccuracy)m timestamp=\(loc.timestamp)")
         DispatchQueue.main.async {
             self.onLocation?(loc.coordinate)
         }
     }
 
     func locationManager(_ manager: CLLocationManager, didFailWithError error: Error) {
-        // 失败默默忽略,保持默认地图区域
+        DiagLog.add("[location] Failed: \(error.localizedDescription)")
     }
 }
 
@@ -96,6 +97,9 @@ private final class SearchCompleterHelper: NSObject, ObservableObject, MKLocalSe
 }
 
 struct MapHomeView: View {
+    @AppStorage("useMacCompanion") private var useMacCompanion = true
+    @ObservedObject private var companion = MacCompanion.shared
+    @Environment(\.scenePhase) private var scenePhase
     @State private var mapSelection: MapSelection<MKMapItem>?
     @State private var cameraPosition: MapCameraPosition = .region(
         MKCoordinateRegion(
@@ -195,7 +199,7 @@ struct MapHomeView: View {
                 disableSpoofing()
             }
         } message: {
-            Text("Spoofing will be disabled. After disabling, restart Location Services once for your real location to return.")
+            Text(useMacCompanion ? "Your Mac will stop location simulation and restore your real location." : "Spoofing will be disabled. After disabling, restart Location Services once for your real location to return.")
         }
         .sheet(isPresented: $showRestartPhoneGuide) {
             disableRestartGuide
@@ -205,6 +209,39 @@ struct MapHomeView: View {
         }
         .sheet(isPresented: $showSettings) {
             SettingsView()
+        }
+        .onChange(of: scenePhase) { _, phase in
+            if phase == .active {
+                locationFetcher.requestOneShot()
+                if useMacCompanion { companion.refresh() }
+            }
+        }
+        .onReceive(companion.$state) { state in
+            guard useMacCompanion else { return }
+            spoofingState = state
+            isSpoofing = companion.isBusy
+            if case .on = state, let location = companion.observedLocation {
+                cameraPosition = .region(MKCoordinateRegion(center: location.coordinate,
+                    span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+            }
+        }
+        .onReceive(companion.$observedLocation) { location in
+            guard useMacCompanion, let location else { return }
+            lastKnownUserCoord = location.coordinate
+            if location.sourceInformation?.isSimulatedBySoftware != true { realUserCoord = location.coordinate }
+            if case .on = companion.state {
+                withAnimation {
+                    cameraPosition = .region(MKCoordinateRegion(center: location.coordinate,
+                        span: MKCoordinateSpan(latitudeDelta: 0.01, longitudeDelta: 0.01)))
+                }
+            }
+        }
+        .onChange(of: useMacCompanion) { _, enabled in
+            if enabled {
+                ContentView.vpnManager?.connection.stopVPNTunnel()
+                companion.start()
+                spoofingState = companion.state
+            }
         }
         .onAppear {
             refreshVPNStatus()
@@ -224,7 +261,10 @@ struct MapHomeView: View {
             locationFetcher.requestOneShot()
             // 根据当前数据恢复 spoofingState
             let savedName = UserDefaults.standard.string(forKey: "currentLocationName") ?? ""
-            if !savedName.isEmpty && vpnConnected {
+            if useMacCompanion {
+                companion.start()
+                spoofingState = companion.state
+            } else if !savedName.isEmpty && vpnConnected {
                 spoofingState = .on(name: savedName)
             } else if !savedName.isEmpty && !vpnConnected {
                 spoofingState = .off
@@ -319,7 +359,10 @@ struct MapHomeView: View {
                         .cornerRadius(12)
                 }
             } else if case .failed = spoofingState {
-                Button(action: { spoofingState = .off }) {
+                Button(action: {
+                    if useMacCompanion { companion.retry() }
+                    else { spoofingState = .off }
+                }) {
                     Text("Retry")
                         .font(.body)
                         .fontWeight(.semibold)
@@ -345,6 +388,13 @@ struct MapHomeView: View {
     }
 
     private var statusSubText: String? {
+        if useMacCompanion {
+            switch spoofingState {
+            case .pending: return "Waiting for Mac and iPhone location verification"
+            case .on: return "Verified on iPhone · Mac companion"
+            default: return "Keep your Mac companion online"
+            }
+        }
         if case .pending = spoofingState { return "Please restart Location Services" }
         return nil
     }
@@ -724,6 +774,12 @@ struct MapHomeView: View {
         // 收藏/最近存原始 GCJ-02 坐标(用于显示和地图回显),设为定位时才在 setAsLocation 内转 WGS-84
         addToRecentLocations(name: name, latitude: coord.latitude, longitude: coord.longitude)
 
+        if useMacCompanion {
+            showLocationSheet = false
+            companion.setLocation(latitude: converted.latitude, longitude: converted.longitude, name: name)
+            return
+        }
+
         // 检查 VPN 状态,需要时自动连
         if !vpnConnected {
             connectVPNForSpoofing(expectedLat: converted.latitude, expectedLon: converted.longitude) { success, errorMsg in
@@ -953,7 +1009,7 @@ struct MapHomeView: View {
                             }
                         }
                     } else {
-                        DiagLog.add("[cold-start] finish failed:\(errMsg ?? "VPN start failed")
+                        DiagLog.add("[cold-start] finish failed:\(errMsg ?? "VPN start failed")")
                         completion(false, errMsg ?? "VPN start failed")
                     }
                 }
@@ -1055,7 +1111,7 @@ struct MapHomeView: View {
                     }
                 }
             } else {
-                DiagLog.add("[hot-restart] finish failed:\(errMsg ?? "VPN reconnect failed")
+                DiagLog.add("[hot-restart] finish failed:\(errMsg ?? "VPN reconnect failed")")
                 spoofingState = .failed(reason: errMsg ?? "VPN reconnect failed")
                 isSpoofing = false
             }
@@ -1112,6 +1168,10 @@ struct MapHomeView: View {
     }
 
     private func disableSpoofing() {
+        if useMacCompanion {
+            companion.clearLocation()
+            return
+        }
         let oldName = currentLocationName
 
         // 进入 pending(关闭中)

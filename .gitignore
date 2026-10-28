@@ -12,6 +12,7 @@ Icon
 !*.xcworkspace/contents.xcworkspacedata
 xcuserdata/
 DerivedData/
+DerivedDataSimulator/
 *.moved-aside
 *.hmap
 *.ipa
@@ -80,3 +81,7 @@ fix_plist.py
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# Python companion
+__pycache__/
+*.pyc

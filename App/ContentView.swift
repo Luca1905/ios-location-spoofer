@@ -3,11 +3,12 @@ import NetworkExtension
 import os.log
 
 struct ContentView: View {
+    @AppStorage("useMacCompanion") private var useMacCompanion = true
     @State private var firstSetupCompleted: Bool = UserDefaults.standard.bool(forKey: "firstSetupCompleted")
 
     var body: some View {
         Group {
-            if firstSetupCompleted {
+            if useMacCompanion || firstSetupCompleted {
                 MapHomeView()
             } else {
                 FirstSetupView()
@@ -30,7 +31,10 @@ struct ContentView: View {
     private func loadVPNManagerIfExists() {
         NETunnelProviderManager.loadAllFromPreferences { managers, _ in
             if let existing = managers?.first {
-                ContentView.vpnManager = existing
+                DispatchQueue.main.async {
+                    ContentView.vpnManager = existing
+                    if useMacCompanion { existing.connection.stopVPNTunnel() }
+                }
             }
         }
     }
@@ -47,7 +51,7 @@ struct ContentView: View {
             let manager = managers?.first ?? NETunnelProviderManager()
 
             let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = "dev.duti.location-spoofer.tunnel"
+            proto.providerBundleIdentifier = "com.luca1905.location-spoofer.tunnel"
             proto.serverAddress = "127.0.0.1"
             manager.protocolConfiguration = proto
             manager.localizedDescription = "Location Spoofer"

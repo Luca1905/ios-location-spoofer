@@ -1,6 +1,14 @@
 # IOS Location Spoofer
 
-Standalone IOS app to spoof GPS location without jailbreaks. Untethered, local, and open source.
+IOS app to change your test device's location without jailbreaks.
+
+**Mac companion is the default mode.** Choose locations in the iPhone app while
+the paired Mac applies them using Apple's developer tools. See
+[Mac companion setup](Companion/README.md). USB and local paired Wi-Fi need no
+VPN or location certificate. Remote access uses Tailscale on both devices, with
+the iPhone on Wi-Fi. Run `Companion/Setup Remote Companion.command` once while
+the paired phone is locally available. The older standalone VPN method below is retained as legacy mode;
+Apple's location-server certificate pinning blocks it on the tested iOS 27.0.1 device.
 
 > [!NOTE]
 > Update 2026-01-19: Apple has rejected this app from testflight. You must have an Apple developer account to sideload onto your own device.

@@ -36,7 +36,7 @@ class GoLocationSpoofer {
     }
 
     private func getStoredCertificates() -> (cert: String, key: String)? {
-        let userDefaults = UserDefaults(suiteName: "group.dev.duti.location-spoofer")!
+        let userDefaults = UserDefaults(suiteName: "group.com.luca1905.location-spoofer")!
 
         guard let cert = userDefaults.string(forKey: caCertKey),
             let key = userDefaults.string(forKey: caKeyKey)
@@ -48,7 +48,7 @@ class GoLocationSpoofer {
     }
 
     private func storeCertificates(cert: String, key: String) {
-        let userDefaults = UserDefaults(suiteName: "group.dev.duti.location-spoofer")!
+        let userDefaults = UserDefaults(suiteName: "group.com.luca1905.location-spoofer")!
         userDefaults.set(cert, forKey: caCertKey)
         userDefaults.set(key, forKey: caKeyKey)
         userDefaults.synchronize()
