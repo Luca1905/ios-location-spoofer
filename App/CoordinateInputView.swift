@@ -171,7 +171,7 @@ struct CoordinateInputView: View {
             .alert("Location Set", isPresented: $showLocationSetAlert) {
                 Button("OK") { }
             } message: {
-                Text("Location set to: \(selectedName). Return to the home screen and follow the prompt to restart VPN for the new location to take effect.")
+                Text("Location request sent for \(selectedName). Check the home screen for Active after your Mac applies it and this iPhone verifies the location.")
             }
             .onAppear {
                 loadSavedLocations()
@@ -210,6 +210,7 @@ struct CoordinateInputView: View {
         locationConfig.setCoordinates(latitude: converted.latitude, longitude: converted.longitude)
         currentLocationName = selectedName
         UserDefaults.standard.set(selectedName, forKey: "currentLocationName")
+        MacCompanion.shared.setLocation(latitude: converted.latitude, longitude: converted.longitude, name: selectedName)
         showLocationSetAlert = true
         onLocationConfirmed?()
     }

@@ -3,6 +3,7 @@
 
 import argparse
 import fcntl
+import hashlib
 import json
 import math
 import os
@@ -15,6 +16,11 @@ import sys
 import uuid
 
 APP_ID = "com.luca1905.location-spoofer"
+
+
+def lock_path(device):
+    identifier = hashlib.sha256(device.casefold().encode()).hexdigest()[:16]
+    return Path(tempfile.gettempdir()) / f"location-spoofer-companion-{identifier}.lock"
 
 
 def devicectl(device, *args):
@@ -121,18 +127,21 @@ def serve(device, once=False, run=devicectl, heartbeat=lambda: None):
 
 
 def main():
+    from tailscale_bridge import CONFIG, configure
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--config", type=Path, default=CONFIG, help="Remote configuration for this phone; use a separate file for each iPhone.")
     parser.add_argument("--device", help="Paired iPhone name or UDID; auto-detected if exactly one physical iPhone is connected.")
     parser.add_argument("--once", action="store_true", help="Apply one pending command, then exit without clearing it.")
     parser.add_argument("--clear", action="store_true", help="Stop simulation and exit.")
     parser.add_argument("--configure-tailscale", action="store_true", help="Save this paired iPhone's discovery information and tailnet address.")
     parser.add_argument("--tailscale-peer", help="iPhone's Tailscale IP or full MagicDNS name.")
     parser.add_argument("--service-identifier", help="Bonjour identifier when multiple iPhones are present.")
+    parser.add_argument("--listen-address", help="A distinct IPv4 address assigned to this Mac for this phone's relay.")
     parser.add_argument("--tunnel-ports", default="49152,55000-56000", help="Apple pairing and tunnel ports relayed over Tailscale.")
     parser.add_argument("--local-only", action="store_true", help="Do not run the configured Tailscale bridge.")
     args = parser.parse_args()
-    from tailscale_bridge import CONFIG, configure
-    saved_config = json.loads(CONFIG.read_text()) if CONFIG.exists() else None
+    args.config = args.config.expanduser().resolve()
+    saved_config = json.loads(args.config.read_text()) if args.config.exists() else None
     device = args.device
     if not device and saved_config:
         device = saved_config["device"]
@@ -150,17 +159,18 @@ def main():
                 parser.error("Connect one paired iPhone, or pass --device with its name or UDID.")
             device = phones[0]["identifier"]
     if args.configure_tailscale:
-        configure(device, args.tailscale_peer, args.service_identifier, args.tunnel_ports)
+        configure(device, args.tailscale_peer, args.service_identifier, args.tunnel_ports,
+                  path=args.config, listen_address=args.listen_address)
         return 0
     if args.clear:
         print(devicectl(device, "simulate", "location", "clear"))
         return 0
-    # One running companion prevents competing commands and duplicate receipts.
-    with open(Path(tempfile.gettempdir()) / "location-spoofer-companion.lock", "w") as lock:
+    # Serialize commands per phone while allowing independent companion services.
+    with open(lock_path(device), "w") as lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
-            print("Location Spoofer companion is already running on this Mac.")
+            print(f"Location Spoofer companion is already running for {device}.")
             return 0
         lock.write(str(os.getpid()))
         lock.flush()
@@ -171,14 +181,14 @@ def main():
                 if saved_config["device"] != device:
                     parser.error("Remote configuration belongs to another iPhone. Run --configure-tailscale for this device.")
                 bridge = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name("tailscale_bridge.py")),
-                                           "--config", str(CONFIG)])
+                                           "--config", str(args.config), "--parent-pid", str(os.getpid())])
                 awake = subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
             def supervise_bridge():
                 nonlocal bridge
                 if bridge and bridge.poll() is not None:
                     print("Remote bridge exited; restarting it.", flush=True)
                     bridge = subprocess.Popen([sys.executable, "-u", str(Path(__file__).with_name("tailscale_bridge.py")),
-                                               "--config", str(CONFIG)])
+                                               "--config", str(args.config), "--parent-pid", str(os.getpid())])
             return serve(device, args.once, heartbeat=supervise_bridge)
         finally:
             for process in (bridge, awake):

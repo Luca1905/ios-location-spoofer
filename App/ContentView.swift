@@ -1,84 +1,36 @@
 import SwiftUI
 import NetworkExtension
-import os.log
 
 struct ContentView: View {
-    @AppStorage("useMacCompanion") private var useMacCompanion = true
-    @State private var firstSetupCompleted: Bool = UserDefaults.standard.bool(forKey: "firstSetupCompleted")
-
     var body: some View {
-        Group {
-            if useMacCompanion || firstSetupCompleted {
-                MapHomeView()
-            } else {
-                FirstSetupView()
-            }
-        }
-        .onAppear {
-            loadVPNManagerIfExists()
-            // 监听 firstSetupCompleted 变化(FirstSetupView 完成 setup 后会写 UserDefaults)
-            NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification, object: nil, queue: .main) { _ in
-                let newValue = UserDefaults.standard.bool(forKey: "firstSetupCompleted")
-                if newValue != firstSetupCompleted {
-                    firstSetupCompleted = newValue
-                }
-            }
-        }
+        MapHomeView()
+            .task { retireLegacyConfiguration() }
     }
 
-    /// 进 App 时只加载已存在的 VPN 配置,不创建、不弹权限。
-    /// 没装过的用户会在 FirstSetupView 点【授权VPN】时再走 installAndStartVPN。
-    private func loadVPNManagerIfExists() {
-        NETunnelProviderManager.loadAllFromPreferences { managers, _ in
-            if let existing = managers?.first {
-                DispatchQueue.main.async {
-                    ContentView.vpnManager = existing
-                    if useMacCompanion { existing.connection.stopVPNTunnel() }
-                }
-            }
+    private func retireLegacyConfiguration() {
+        for key in ["useMacCompanion", "firstSetupCompleted", "certDownloaded", "certInstalled", "certTrusted"] {
+            UserDefaults.standard.removeObject(forKey: key)
         }
-    }
-
-    /// 创建/复用 manager,写入 protocol 配置并 saveToPreferences。
-    /// save 成功通过 completion 回传 manager,失败回传 error。调用方负责后续 startVPNTunnel。
-    static func installAndStartVPN(completion: @escaping (Result<NETunnelProviderManager, Error>) -> Void) {
+        // Retire only this app's old tunnel. Never stop or remove Tailscale.
         NETunnelProviderManager.loadAllFromPreferences { managers, error in
-            if let error = error {
-                completion(.failure(error))
+            if let error {
+                DiagLog.add("[migration] Could not inspect old app VPN: \(error.localizedDescription)")
                 return
             }
-
-            let manager = managers?.first ?? NETunnelProviderManager()
-
-            let proto = NETunnelProviderProtocol()
-            proto.providerBundleIdentifier = "com.luca1905.location-spoofer.tunnel"
-            proto.serverAddress = "127.0.0.1"
-            manager.protocolConfiguration = proto
-            manager.localizedDescription = "Location Spoofer"
-            manager.isEnabled = true
-
-            manager.saveToPreferences { error in
-                if let error = error {
-                    completion(.failure(error))
-                    return
-                }
-                // save 完后必须再 load 一次,让内核把新配置真正绑到 manager 上,
-                // 否则立刻 startVPNTunnel 会拿到 stale config 报 NEVPNErrorDomain error 1。
-                manager.loadFromPreferences { error in
-                    if let error = error {
-                        completion(.failure(error))
+            for manager in managers ?? [] {
+                guard let configuration = manager.protocolConfiguration as? NETunnelProviderProtocol,
+                      configuration.providerBundleIdentifier == "com.luca1905.location-spoofer.tunnel" else { continue }
+                manager.connection.stopVPNTunnel()
+                manager.removeFromPreferences { error in
+                    if let error {
+                        DiagLog.add("[migration] Could not remove old app VPN: \(error.localizedDescription)")
                     } else {
-                        ContentView.vpnManager = manager
-                        completion(.success(manager))
+                        DiagLog.add("[migration] Removed old app VPN")
                     }
                 }
             }
         }
     }
-}
-
-extension ContentView {
-    static var vpnManager: NETunnelProviderManager?
 }
 
 #Preview {

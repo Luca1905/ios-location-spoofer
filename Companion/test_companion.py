@@ -1,11 +1,24 @@
 import math
+import fcntl
 import unittest
 import uuid
 
-from companion import apply_request, validate_request
+from companion import apply_request, lock_path, validate_request
 
 
 class CompanionTests(unittest.TestCase):
+    def test_phone_locks_allow_two_phones_but_exclude_a_duplicate_worker(self):
+        first_path, second_path = lock_path(str(uuid.uuid4())), lock_path(str(uuid.uuid4()))
+        try:
+            with open(first_path, "w") as first, open(second_path, "w") as second, open(first_path, "w") as duplicate:
+                fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                with self.assertRaises(BlockingIOError):
+                    fcntl.flock(duplicate, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            first_path.unlink(missing_ok=True)
+            second_path.unlink(missing_ok=True)
+
     def request(self, **changes):
         return {"version": 1, "id": str(uuid.uuid4()), "enabled": True,
                 "latitude": 53.63, "longitude": 9.99, "name": "Hamburg", **changes}

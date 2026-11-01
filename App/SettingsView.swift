@@ -1,8 +1,6 @@
 import SwiftUI
-import NetworkExtension
 
 struct SettingsView: View {
-    @AppStorage("useMacCompanion") private var useMacCompanion = true
     @Environment(\.dismiss) private var dismiss
     @State private var showResetConfirm = false
     @State private var showCopiedToast = false
@@ -11,20 +9,11 @@ struct SettingsView: View {
     var body: some View {
         NavigationView {
             List {
-                Section("Location Method") {
-                    Toggle("Use Mac Companion", isOn: $useMacCompanion)
-                    if useMacCompanion {
-                        Text("Choose a location here while the Mac companion is running. Connect by USB, paired Wi-Fi, or Tailscale. No location certificate is required.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                        Text("Away from home: connect Tailscale on both devices and keep this iPhone on Wi-Fi. The Mac must stay online. Configure remote access once using Setup Remote Companion.command on the Mac.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    } else {
-                        Text("Legacy VPN mode may not work on newer iOS versions because Apple's location server uses certificate pinning.")
-                            .font(.footnote)
-                            .foregroundColor(.secondary)
-                    }
+                Section("Mac Companion") {
+                    Text("Choose a location while your Mac companion is running. Connect by USB, paired Wi-Fi, or Tailscale.")
+                    Text("For remote access, connect Tailscale on both devices and join a Wi-Fi network on this iPhone. Keep the Mac powered on and signed in.")
+                        .font(.footnote)
+                        .foregroundColor(.secondary)
                 }
                 // 关于
                 Section("About") {
@@ -44,12 +33,10 @@ struct SettingsView: View {
 
                 // 诊断信息
                 Section("Diagnostics (use when contacting support)") {
-                    diagnosticRow(label: "Location Method", value: useMacCompanion ? "Mac Companion" : "Legacy VPN")
-                    diagnosticRow(label: "VPN Status", value: vpnStatusText)
-                    diagnosticRow(label: "Certificate Status", value: certificateStatusText)
+                    diagnosticRow(label: "Location Method", value: "Mac Companion")
+                    diagnosticRow(label: "Companion Status", value: MacCompanion.shared.state.primaryText)
                     diagnosticRow(label: "Current Spoofed Location", value: currentLocationText)
                     diagnosticRow(label: "Current Coordinates", value: currentCoordinatesText)
-                    diagnosticRow(label: "Initial Setup", value: setupCompletedText)
 
                     Button(action: { copyDiagnostic() }) {
                         HStack {
@@ -70,14 +57,6 @@ struct SettingsView: View {
                         .foregroundColor(.red)
                         .disabled(diagLog.entries.isEmpty)
                 }) {
-                    Button(action: { queryGoLogsViaIPC() }) {
-                        HStack {
-                            Image(systemName: "arrow.down.doc")
-                            Text("Fetch Go Proxy Logs (IPC)")
-                            Spacer()
-                        }
-                        .foregroundColor(.blue)
-                    }
                     if diagLog.entries.isEmpty {
                         Text("No logs yet. Run \"Set as Location\" once and come back.")
                             .font(.caption)
@@ -114,7 +93,7 @@ struct SettingsView: View {
                 Button("Cancel", role: .cancel) { }
                 Button("Reset", role: .destructive) { resetApp() }
             } message: {
-                Text("This clears all settings, favorites, and certificate state.\n\nYou will need to go through the initial setup again after resetting.")
+                Text("This asks your Mac to restore your real location and clears this app's settings and favorites.")
             }
         }
     }
@@ -140,31 +119,6 @@ struct SettingsView: View {
         Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"
     }
 
-    private var vpnStatusText: String {
-        guard let manager = ContentView.vpnManager else {
-            return "Not initialized"
-        }
-        switch manager.connection.status {
-        case .invalid:        return "Invalid"
-        case .disconnected:   return "Disconnected"
-        case .connecting:     return "Connecting"
-        case .connected:      return "Connected"
-        case .reasserting:    return "Reasserting"
-        case .disconnecting:  return "Disconnecting"
-        @unknown default:     return "Unknown"
-        }
-    }
-
-    private var certificateStatusText: String {
-        let downloaded = UserDefaults.standard.bool(forKey: "certDownloaded")
-        let installed = UserDefaults.standard.bool(forKey: "certInstalled")
-        let trusted = UserDefaults.standard.bool(forKey: "certTrusted")
-        if trusted { return "Trusted" }
-        if installed { return "Installed, not trusted" }
-        if downloaded { return "Downloaded, not installed" }
-        return "Not configured"
-    }
-
     private var currentLocationText: String {
         UserDefaults.standard.string(forKey: "currentLocationName") ?? "None"
     }
@@ -174,10 +128,6 @@ struct SettingsView: View {
             return "None"
         }
         return String(format: "%.6f, %.6f", coords.latitude, coords.longitude)
-    }
-
-    private var setupCompletedText: String {
-        UserDefaults.standard.bool(forKey: "firstSetupCompleted") ? "Completed" : "Not completed"
     }
 
     private func copyDiagnostic() {
@@ -190,11 +140,10 @@ struct SettingsView: View {
         ─────────────
         App version: \(appVersion)
         Build: \(buildNumber)
-        VPN status: \(vpnStatusText)
-        Certificate status: \(certificateStatusText)
+        Location method: Mac Companion
+        Companion status: \(MacCompanion.shared.state.primaryText)
         Current spoofed location: \(currentLocationText)
         Current coordinates: \(currentCoordinatesText)
-        Initial setup: \(setupCompletedText)
 
         ─── Flow Logs ───
         \(logBlock)
@@ -206,50 +155,14 @@ struct SettingsView: View {
         }
     }
 
-    /// 通过 IPC 从 Tunnel 拉取 Go 端日志缓冲(handleLocationRequest 的逐次追踪)。
-    /// 收到的字符串按行拆开,逐行 DiagLog.add 前缀 [Go] 写进流程日志显示。
-    private func queryGoLogsViaIPC() {
-        guard let manager = ContentView.vpnManager,
-              let session = manager.connection as? NETunnelProviderSession else {
-            DiagLog.add("[Go Logs] session unavailable (manager nil or connection is not NETunnelProviderSession)")
-            return
-        }
-        let request = Data("getLogs".utf8)
-        do {
-            try session.sendProviderMessage(request) { response in
-                DispatchQueue.main.async {
-                    guard let data = response, !data.isEmpty else {
-                        DiagLog.add("[Go Logs] fetch returned empty (no new Go logs or tunnel not ready)")
-                        return
-                    }
-                    guard let text = String(data: data, encoding: .utf8) else {
-                        DiagLog.add("[Go Logs] decode failed: \(data.count) bytes not UTF-8")
-                        return
-                    }
-                    let lines = text.split(separator: "\n", omittingEmptySubsequences: true)
-                    DiagLog.add("[Go Logs] fetched \(lines.count) entries")
-                    for line in lines {
-                        DiagLog.add("[Go] \(line)")
-                    }
-                }
-            }
-        } catch {
-            DiagLog.add("[Go Logs] sendProviderMessage error: \(error.localizedDescription)")
-        }
-    }
-
     // MARK: - 重置 App
 
     private func resetApp() {
-        if useMacCompanion { MacCompanion.shared.clearLocation() }
-        // 断开 VPN
-        ContentView.vpnManager?.connection.stopVPNTunnel()
+        MacCompanion.shared.clearLocation()
         // 清坐标
         LocationConfiguration.shared.clearCoordinates()
         // 清所有 UserDefaults key
         let keys = [
-            "firstSetupCompleted",
-            "certDownloaded", "certInstalled", "certTrusted",
             "currentLocationName", "savedLocations", "recentLocations"
         ]
         for key in keys {

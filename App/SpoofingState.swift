@@ -32,7 +32,7 @@ enum SpoofingState: Equatable {
         case .off, .on, .failed:
             return nil
         case .pending:
-            return "Please restart Location Services"
+            return "Waiting for Mac and iPhone location verification"
         }
     }
 

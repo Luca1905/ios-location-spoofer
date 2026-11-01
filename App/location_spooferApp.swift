@@ -2,7 +2,7 @@
 //  location_spooferApp.swift
 //  location-spoofer
 //
-//  Location spoofing app for iOS using VPN tunnel
+//  Location selection and Core Location verification for the Mac companion.
 //
 
 import SwiftUI

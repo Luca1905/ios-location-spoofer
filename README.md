@@ -1,66 +1,60 @@
-# IOS Location Spoofer
+# iOS Location Spoofer
 
-IOS app to change your test device's location without jailbreaks.
+Choose a location in the iPhone app; a paired Mac applies it using Apple's
+developer tools. The iPhone independently verifies the result through Core
+Location before showing **Active**.
 
-**Mac companion is the default mode.** Choose locations in the iPhone app while
-the paired Mac applies them using Apple's developer tools. See
-[Mac companion setup](Companion/README.md). USB and local paired Wi-Fi need no
-VPN or location certificate. Remote access uses Tailscale on both devices, with
-the iPhone on Wi-Fi. Run `Companion/Setup Remote Companion.command` once while
-the paired phone is locally available. The older standalone VPN method below is retained as legacy mode;
-Apple's location-server certificate pinning blocks it on the tested iOS 27.0.1 device.
+The app uses the Mac companion exclusively. The old VPN/certificate setup,
+method switch, and location-service restart tutorials have been removed. The app
+no longer embeds the packet-tunnel extension or requires the Go proxy to build.
+An upgrade removes only this app's old VPN configuration and obsolete setup
+flags, preserving favorites, recent locations, and companion requests. Previously
+installed certificate profiles can be removed manually in iOS Settings.
 
-> [!NOTE]
-> Update 2026-01-19: Apple has rejected this app from testflight. You must have an Apple developer account to sideload onto your own device.
+## Setup and use
 
-https://github.com/user-attachments/assets/456d508c-2104-4d10-9458-e58e84b74788
+See [Mac companion setup](Companion/README.md) for pairing, Developer Mode,
+Tailscale, automatic startup after login, and independent services for two or
+more phones.
 
-## How it works
+1. Pair the iPhone with the Mac and enable Developer Mode.
+2. Configure and start the Mac companion.
+3. For remote use, connect Tailscale on both devices and join a Wi-Fi network on
+   the iPhone. Keep the Mac powered on, signed in, and online.
+4. Select a location in the app and tap **Set Location**. Wait for **Active**.
+5. Tap **Disable** to restore the real location; the app verifies restoration.
 
-I did some research a few years back on how IOS location services worked: <https://github.com/acheong08/apple-corelocation-experiments>
+## Mac CLI
 
-TL;DR: iPhone scans for WIFI access points, sends the list of access points to Apple, Apple tells device where those points are, iPhone triangulates. What you can do here is have a VPN that does a Man in the Middle attack and rewrite the response with different values for where the access points are. The device then thinks that is where it is.
+```sh
+./location-spoofer install-cli
+location-spoofer status
+location-spoofer doctor 'Phone Two'
+location-spoofer logs 'Phone Two'
+location-spoofer restart 'Phone Two'
+```
 
-> MITM and processing are all done on device. No network connections are made by the app. It is safe to use...
+Names and configuration IDs are printed by `status`. Start/stop/restart/install
+commands always target one explicit phone, leaving the others alone. See the
+[CLI reference](Companion/README.md#mac-cli) for JSON output and exit codes.
 
-## Building this yourself
+## Build and validate
 
-- Go to `./GoSpoofer/` and run `make.sh`
-- Open `./location-spoofer.xcodeproj/` with XCode
-- Select a paid developer account (Required. PacketTunnel is a paid API)
-- Run on iPhone?
+Open `location-spoofer.xcodeproj` in Xcode, select the `location-spoofer` scheme,
+and configure your signing team to run on a personal iPhone. The app requires
+iOS 18 or later. No Go build or Swift package dependencies are needed.
 
-## Usage
+```sh
+python3 -m unittest discover -s Companion -v
+xcodebuild -project location-spoofer.xcodeproj -scheme location-spoofer \
+  -destination 'generic/platform=iOS Simulator' CODE_SIGNING_ALLOWED=NO build
+```
 
-1. Open app
-2. Go to "Location"
-3. Enter a GPS coordinate or choose a preset
-4. Go to VPN
-5. Install profile
-6. Connect to VPN
-7. Go to Safari
-8. Go to <http://mitm.it>
-9. Download profile
-10. Go to settings
-11. Enable profile
-12. Go to General > About > Certificate Trust Settings and enable Location Spoofer CA
-13. Turn off and on location services
-14. Go to maps and see it working
+The Python tests cover two-phone isolation, CLI selection and diagnostics,
+installation and restart recovery, negotiated tunnel ports, and actual local
+TCP/UDP forwarding. Simulator tests cover app behavior and Core Location using a
+simulator transport adapter. A physical Tailscale path must be verified on the
+phone itself. Apps may detect Apple's software-simulated locations.
 
-## Some annoying notes encountered along the way
-
-- To do MITM on IOS, you need to do a weird song and dance. PacketTunnel -> Proxy -> Socks Server.
-- See [HACKS.md](./HACKS.md). Apple won't let you upload if you have a `.a` in your bundle
-- When you run out of memory in a service, you get SIGKILLED without notice or logs. I spent forever figuring out why I was randomly getting SIGKILLED. Answer is look at the Console app (wayyy to verbose)
-
-## Additional notes
-
-This was partially vibe-coded, kinda, sorta. I wrote [apple-corelocation-experiments](https://github.com/acheong08/apple-corelocation-experiments) and [ios-mitm-demo](https://github.com/acheong08/ios-mitm-demo) by hand and told AI to combine them into 1. I'd say a solid 70% of code is reused and the AI didn't have to do any of the hard parts like reverse engineering. The objective was to test open source models (GLM-4.7 and MiniMax-M2.1) and how far they can go while also getting something useful out of it.
-
-Results were mixed. AI can definitely do UI, but whenever it hit a real roadblock, it'll hullucinate, delete all tests, and try to cheat its way to success. For example, it failed to re-implement my ARPC parsing correctly, and instead of referencing the correct implementation and fixing its own, it tried to delete everything in Go and try to rewrite in Swift. A lot of times, I had to step in and fix whatever it was stuck on before proceeding.
-
-IOS development is hell though and I can see how the lack of proper feedback for runtime issues can cause it to go crazy.
-
-~There are some **known bugs** even I can't figure out how to fix. For some reason, if you connect to another VPN, and try to connect to the location spoofer again, it will fail. You have to go to Settings > VPN and manually select the right profile before turning it on. Not enough references online for me to figure out. I am not an IOS developer and I do not have the time and energy to fix this. Workaround works well enough for my use case.~
-
-Update: Claude Opus 4.5 was able to figure it out in 2 tries after giving it a reference implementation by [Kean](https://github.com/kean/VPN/).
+`Tunnel/` and `GoSpoofer/` retain the earlier location-server research sources;
+they are not part of the app target.
